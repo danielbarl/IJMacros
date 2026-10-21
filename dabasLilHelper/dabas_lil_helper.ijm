@@ -116,9 +116,9 @@ function getLsfmName(title, label, lo, hi) {
     lsfmName = baseName + "_" + label + "_" + d2s(lo, 0) + "-" + d2s(hi, 0);
 }
 
-// letters, digits and underscores only, so the name stays parseable
+// letters, digits and dashes only: underscores separate the fields of the file name
 function cleanLabel(s) {
-    cleanedLabel = replace(s, "[^A-Za-z0-9_]", "");
+    cleanedLabel = replace(s, "[^A-Za-z0-9-]", "");
 }
 
 // true if the channel file already has a [acq] block
@@ -138,28 +138,46 @@ function writeChannelBlock(path, acq, nCh) {
     if (File.exists(path)) {
         File.append(block, path);
     } else {
-        header = "# Channel names for this experiment, one block per acquisition.\n";
-        header = header + "# Fill in the names after the = (letters, digits, underscores), e.g. 1=NeuN_Vio667\n\n";
+        header = "# Channel names for this experiment, one block per sample and acquisition.\n";
+        header = header + "# Block name: [sample_acquisition], e.g. [X103-1_Details]\n";
+        header = header + "# Several [headers] in a row share the names listed below them (same panel).\n";
+        header = header + "# Fill in the names after the = : letters, digits and dashes only.\n";
+        header = header + "# NOT allowed: underscores (_), spaces, dots or any other symbol.\n";
+        header = header + "# Example: 1=NeuN-Vio667   2=AF   3=CD146-Vio570\n\n";
         File.saveString(header + block, path);
     }
 }
 
-// fills chNames[] with the names of the [acq] block; "" where a channel has no name yet
-function readChannelNames(path, acq, nCh) {
+// fills chNames[] for the block key; "" where a channel has no name yet.
+// Consecutive [header] lines form a group, and the names below the group apply to all of them.
+function readChannelNames(path, key, nCh) {
     chNames = newArray(nCh);
     for (c = 0; c < nCh; c++) chNames[c] = "";
     lines = split(File.openAsString(path), "\n");
-    inBlock = false;
-    for (i = 0; i < lines.length; i++) {
+    groupHas = false;   // the current header group contains key
+    inNames = false;    // names have started after the current header group
+    done = false;
+    for (i = 0; i < lines.length && !done; i++) {
         line = String.trim(lines[i]);
-        if (startsWith(line, "[")) {
-            inBlock = (line == "[" + acq + "]");
-        } else if (inBlock && indexOf(line, "=") > 0) {
-            eq = indexOf(line, "=");
-            n = parseInt(substring(line, 0, eq));
-            if (!isNaN(n) && n >= 1 && n <= nCh) {
-                cleanLabel(String.trim(substring(line, eq + 1)));
-                chNames[n - 1] = cleanedLabel;
+        if (lengthOf(line) > 0 && !startsWith(line, "#")) {
+            if (startsWith(line, "[")) {
+                if (inNames) {
+                    // a new group starts: the previous group was complete
+                    if (groupHas) done = true;
+                    groupHas = false;
+                    inNames = false;
+                }
+                if (line == "[" + key + "]") groupHas = true;
+            } else if (indexOf(line, "=") > 0) {
+                inNames = true;
+                if (groupHas) {
+                    eq = indexOf(line, "=");
+                    n = parseInt(substring(line, 0, eq));
+                    if (!isNaN(n) && n >= 1 && n <= nCh) {
+                        cleanLabel(String.trim(substring(line, eq + 1)));
+                        chNames[n - 1] = cleanedLabel;
+                    }
+                }
             }
         }
     }
@@ -171,25 +189,28 @@ function editChannelFile(path, msg) {
     exit(msg + "\nFill in the channel names in:\n" + path + "\nthen run the macro again.");
 }
 
-// fills chNames[] for the window's acquisition; opens the channel file if a block or name is missing
+// fills chNames[] for the window's sample and acquisition; opens the channel file if a block or name is missing
 function channelNamesOf(title, nCh) {
     getExpId(title);
+    getSampleId(title);
     getAcquisition(title);
+    // one block per sample and acquisition, e.g. [X103-1 Details]: samples can carry different stainings
+    blockKey = sampleID + "_" + acqName;
     // explicit "/" so the path is right even if channelDir lost its trailing slash
     if (!File.isDirectory(channelDir)) File.makeDirectory(channelDir);
     channelPath = channelDir + "/" + expID + "_channels.txt";
     // nested, not "||": ImageJ evaluates both sides of || and would read a missing file
     if (!File.exists(channelPath)) {
-        writeChannelBlock(channelPath, acqName, nCh);
+        writeChannelBlock(channelPath, blockKey, nCh);
         editChannelFile(channelPath, "Created " + expID + "_channels.txt.");
     }
-    if (!hasChannelBlock(channelPath, acqName)) {
-        writeChannelBlock(channelPath, acqName, nCh);
-        editChannelFile(channelPath, "Added a block [" + acqName + "] with " + nCh + " channels.");
+    if (!hasChannelBlock(channelPath, blockKey)) {
+        writeChannelBlock(channelPath, blockKey, nCh);
+        editChannelFile(channelPath, "Added a block [" + blockKey + "] with " + nCh + " channels.");
     }
-    readChannelNames(channelPath, acqName, nCh);
+    readChannelNames(channelPath, blockKey, nCh);
     for (c = 0; c < nCh; c++) {
-        if (chNames[c] == "") editChannelFile(channelPath, "Channel " + (c + 1) + " of [" + acqName + "] has no name.");
+        if (chNames[c] == "") editChannelFile(channelPath, "Channel " + (c + 1) + " of [" + blockKey + "] has no name.");
     }
 }
 
